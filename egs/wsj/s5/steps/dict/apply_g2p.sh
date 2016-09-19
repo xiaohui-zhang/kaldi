@@ -1,16 +1,20 @@
 #!/bin/bash
 # Copyright 2014  Johns Hopkins University (Author: Yenda Trmal)
-# Copyright 2016  Xiaohui Zhang
+# Copyright 2017  Xiaohui Zhang
 # Apache 2.0
 
 # Begin configuration section.  
 stage=0
-encoding='utf-8'
-var_counts=3  #Generate upto N variants
-var_mass=0.9  #Generate so many variants to produce 90 % of the prob mass
+nbest=3  # Generate upto N pronunciation variants for each word 
+# (The maximum size of the nbest list, not considering pruning and taking the prob-mass yet).
+thresh=10 # Pruning threshold for n-best. A large threshold makes the nbest list 
+# shorter, and less likely to hit the max size. 
+pmass=0.9  # Select the top variants from the pruned nbest list, 
+# summing up to this total prob-mass for a word.
+# On the "boundary", it's greedy by design, e.g. if pmass = 0.8,
+# and we have prob(pron_1) = 0.5, and prob(pron_2) = 0.4, then we get both.
+
 cmd=run.pl
-nj=10          #Split the task into several parallel, to speedup things
-model=
 # End configuration section.
 
 echo "$0 $@"  # Print the command line for logging
@@ -29,7 +33,10 @@ if [ $# != 3 ]; then
    echo "e.g.: $0 oov_words exp/g2p exp/g2p/oov_lex"
    echo ""
    echo "main options (for others, see top of script file)"
-   echo "  --nj <int>                                    # How many tasks should be spawn (to speedup things)"
+   echo "  --nbest <int>                                    # Generate upto N pronunciation variants for each word"
+   echo "  --thresh <int>                                   # Pruning threshold for n-best."
+   echo "  --pmass <float>                                  # Select the top variants from the pruned nbest list,"
+   echo "                                                   # summing up to this total prob-mass for a word."
    echo "  --cmd (utils/run.pl|utils/queue.pl <queue opts>) # how to run jobs."
    exit 1;
 fi
@@ -38,31 +45,26 @@ wordlist=$1
 modeldir=$2
 output=$3
 
-
 mkdir -p $output/log
 
-model=$modeldir/g2p.model.final
+model=$modeldir/model.fst
 [ ! -f ${model:-} ] && echo "File $model not found in the directory $modeldir." && exit 1
-#[ ! -x $wordlist ] && echo "File $wordlist not found!" && exit 1
+[ ! -f $wordlist ] && echo "File $wordlist not found!" && exit 1
 
 cp $wordlist $output/wordlist.txt
 
-if ! g2p=`which g2p.py` ; then
-  echo "The Sequitur was not found !"
-  echo "Go to $KALDI_ROOT/tools and execute extras/install_sequitur.sh"
+if ! phonetisaurus=`which phonetisaurus-apply` ; then
+  echo "Phonetisarus was not found !"
+  echo "Go to $KALDI_ROOT/tools and execute extras/install_phonetisaurus.sh"
   exit 1
 fi
 
 echo "Applying the G2P model to wordlist $wordlist"
 
-if [ $stage -le 0 ]; then
-  $cmd JOBS=1:$nj $output/log/apply.JOBS.log \
-    split -n l/JOBS/$nj $output/wordlist.txt \| \
-    g2p.py -V $var_mass --variants-number $var_counts --encoding $encoding \
-      --model $modeldir/g2p.model.final --apply - \
-    \> $output/output.JOBS
-fi
-cat $output/output.* > $output/output
+$cmd $output/log/apply_g2p.log \
+  phonetisaurus-apply  --model $model --nbest $nbest --thresh $thresh \
+    --accumulate --pmass $pmass --probs --verbose --word_list \
+    "$output/wordlist.txt" '>' $output/lexicon.lex
 
 # Remap the words from output file back to the original casing
 # Conversion of some of thems might have failed, so we have to be careful
@@ -70,9 +72,6 @@ cat $output/output.* > $output/output
 # Also, because the sequitur output is not readily usable as lexicon (it adds 
 # one more column with ordering of the pron. variants) convert it into the proper lexicon form
 output_lex=$output/lexicon.lex
-
-# Just convert it to a proper lexicon format
-cut -f 1,3,4 $output/output > $output_lex
 
 # Some words might have been removed or skipped during the process,
 # let's check it and warn the user if so...

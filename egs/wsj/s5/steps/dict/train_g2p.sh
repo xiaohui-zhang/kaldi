@@ -1,12 +1,11 @@
 #!/bin/bash
 # Copyright 2014  Johns Hopkins University (Author: Yenda Trmal)
-# Copyright 2016  Xiaohui Zhang
+# Copyright 2017  Xiaohui Zhang
 # Apache 2.0
 
-# Begin configuration section.
-iters=5
+# Begin configuration section.  
+iters=7
 stage=0
-encoding='utf-8'
 only_words=true
 cmd=run.pl
 # a list of silence phones, like data/local/dict/silence_phones.txt
@@ -17,7 +16,6 @@ echo "$0 $@"  # Print the command line for logging
 
 [ -f ./path.sh ] && . ./path.sh; # source the path.
 . utils/parse_options.sh || exit 1;
-
 set -u
 set -e
 
@@ -42,41 +40,42 @@ mkdir -p $wdir/log
 
 [ ! -f $lexicon ] && echo "$0: Training lexicon does not exist." && exit 1
 
-# Optionally remove words that are mapped to a single silence phone from the lexicon.
-if $only_words && [ ! -z "$silence_phones" ]; then
-  awk 'NR==FNR{a[$1] = 1; next} {s=$2;for(i=3;i<=NF;i++) s=s" "$i;a[$1]=s;if(!(s in a)) print $1" "s}' \
-    $silence_phones > $wdir/lexicon_onlywords.txt
-  lexicon=$wdir/lexicon_onlywords.txt
+# For input lexicon, remove pronunciations containing non-utf-8-encodable characters,
+# and optionally remove words that are mapped to a single silence phone from the lexicon.
+if [ $stage -le 0 ]; then
+  if $only_words && [ ! -z "$silence_phones" ]; then
+    awk 'NR==FNR{a[$1] = 1; next} {s=$2;for(i=3;i<=NF;i++) s=s" "$i; if(!(s in a)) print $1" "s}' \
+      $silence_phones $lexicon | \
+      awk '{printf("%s\t",$1); for (i=2;i<NF;i++){printf("%s ",$i);} printf("%s\n",$NF);}' | \
+      iconv -c -t utf-8 -  | awk 'NF > 0'> $wdir/lexicon_tab_separated.txt
+  else
+    awk '{printf("%s\t",$1); for (i=2;i<NF;i++){printf("%s ",$i);} printf("%s\n",$NF);}' $lexicon | \
+      iconv -c -t utf-8 -  | awk 'NF > 0'> $wdir/lexicon_tab_separated.txt
+  fi
 fi
 
-if ! g2p=`which g2p.py` ; then
-  echo "Sequitur was not found !"
-  echo "Go to $KALDI_ROOT/tools and execute extras/install_sequitur.sh"
+if ! phonetisaurus=`which phonetisaurus-align` ; then
+  echo "Phonetisarus was not found !"
+  echo "Go to $KALDI_ROOT/tools and execute extras/install_phonetisaurus.sh"
   exit 1
 fi
 
-echo "Training the G2P model (iter 0)"
-
 if [ $stage -le 0 ]; then
-  $cmd $wdir/log/g2p.0.log \
-    g2p.py -S --encoding $encoding --train $lexicon --devel 5% --write-model $wdir/g2p.model.0
+  # Align lexicon stage. Lexicon is assumed to have first column tab separated
+  $cmd $wdir/log/g2p_align.0.log \
+    phonetisaurus-align --input=$wdir/lexicon_tab_separated.txt --ofile=${wdir}/aligned_lexicon.corpus || exit 1;
 fi
 
-for i in `seq 0 $(($iters-2))`; do
+if [ $stage -le 1 ]; then
+  # Train the n-gram model using srilm.
+  $cmd $wdir/log/train_ngram.log \
+    ngram-count -order $iters -kn-modify-counts-at-end -gt1min 0 -gt2min 0 \
+    -gt3min 0 -gt4min 0 -gt5min 0 -gt6min 0 -gt7min 0 -ukndiscount \
+    -text ${wdir}/aligned_lexicon.corpus -lm ${wdir}/aligned_lexicon.arpa
+fi
 
-  echo "Training the G2P model (iter $[$i + 1] )"
-
-  if [ $stage -le $i ]; then
-    $cmd $wdir/log/g2p.$(($i + 1)).log \
-      g2p.py -S --encoding $encoding --model $wdir/g2p.model.$i --ramp-up --train $lexicon --devel 5% --write-model $wdir/g2p.model.$(($i+1))
-  fi
-
-done
-
-! (set -e; cd $wdir; ln -sf g2p.model.$[$iters-1] g2p.model.final ) && echo "Problem finalizing training... " && exit 1
-
-if [ $stage -le $(($i + 2)) ]; then
-  echo "Running test..."
-  $cmd $wdir/log/test.log \
-    g2p.py --encoding $encoding --model $wdir/g2p.model.final --test $lexicon
+if [ $stage -le 2 ]; then
+  # Convert the arpa file to FST.
+  $cmd $wdir/log/convert_fst.log \
+    phonetisaurus-arpa2wfst --lm=${wdir}/aligned_lexicon.arpa --ofile=${wdir}/model.fst
 fi
