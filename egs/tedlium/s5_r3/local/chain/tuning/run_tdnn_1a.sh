@@ -1,6 +1,22 @@
 #!/bin/bash
 
-# See run_tdnnf_1a.sh for comparative results.
+# Results
+
+# System                      tdnn_1a
+# Scoring script              sclite
+# WER on dev(orig)              8.2
+# WER on dev(rescored ngram)    7.6
+# WER on dev(rescored rnnlm)    6.3
+# WER on test(orig)             8.1
+# WER on test(rescored ngram)   7.7
+# WER on test(rescored rnnlm)   6.7
+# Final train prob            -0.0802
+# Final valid prob            -0.0980
+# Final train prob (xent)     -1.1450
+# Final valid prob (xent)     -1.2498
+# Num-params                  26651840
+
+
 
 ## how you run this (note: this assumes that the run_tdnn.sh soft link points here;
 ## otherwise call it directly in its location).
